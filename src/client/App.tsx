@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Box, Text, useInput, useApp } from 'ink';
 import SelectInput from 'ink-select-input';
+import TextInput from 'ink-text-input';
 import { io, Socket } from 'socket.io-client';
 import { GameState, GamePhase, Player, Card, PlayerAction } from '../types/index.js';
 
@@ -47,7 +48,12 @@ const CardBack = ({ dim }: { dim?: boolean }) => (
   </Box>
 );
 
-const PlayerBadge = ({ player, isCurrent, showCards }: { player: Player; isCurrent: boolean; showCards: boolean }) => {
+const PlayerBadge = ({ player, isCurrent, showCards, isDealer }: { 
+  player: Player; 
+  isCurrent: boolean; 
+  showCards: boolean;
+  isDealer: boolean;
+}) => {
   let statusColor = 'white';
   if (player.isFolded) statusColor = 'gray';
   else if (isCurrent) statusColor = 'yellow';
@@ -61,7 +67,11 @@ const PlayerBadge = ({ player, isCurrent, showCards }: { player: Player; isCurre
         flexDirection="column"
         width="100%"
       >
-        <Text bold color={statusColor as any} wrap="truncate-end">{player.name}</Text>
+        <Box justifyContent="space-between">
+          <Text bold color={statusColor as any} wrap="truncate-end">
+            {isDealer ? '👑 ' : ''}{player.name}
+          </Text>
+        </Box>
         <Text color="yellow">💰{player.chips}</Text>
         <Text color="cyan">B:{player.currentBet}</Text>
       </Box>
@@ -104,18 +114,34 @@ const rankMap: Record<number, string> = { 11: 'J', 12: 'Q', 13: 'K', 14: 'A' };
 export const App = ({ host, port, playerName }: { host: string; port: number; playerName: string }) => {
   const [socket, setSocket] = useState<Socket | null>(null);
   const [state, setState] = useState<GameState | null>(null);
+  const [isRaising, setIsRaising] = useState(false);
+  const [raiseAmount, setRaiseAmount] = useState('');
   const { exit } = useApp();
 
   useEffect(() => {
     const s = io(`http://${host}:${port}`);
     setSocket(s);
     s.on('connect', () => { s.emit('join', playerName); });
-    s.on('state', (newState: GameState) => { setState(newState); });
+    s.on('state', (newState: GameState) => { 
+      setState(newState);
+      // Reset raising state if it's no longer our turn
+      if (newState.currentTurnId !== s.id) {
+        setIsRaising(false);
+        setRaiseAmount('');
+      }
+    });
     return () => { s.close(); };
   }, [host, port, playerName]);
 
   useInput((input, key) => {
-    if (key.escape) exit();
+    if (key.escape) {
+      if (isRaising) {
+        setIsRaising(false);
+        setRaiseAmount('');
+      } else {
+        exit();
+      }
+    }
     if (state?.phase === GamePhase.GameOver && (input === 'r' || key.return)) {
       socket?.emit('restart');
     }
@@ -159,9 +185,11 @@ export const App = ({ host, port, playerName }: { host: string; port: number; pl
                 player={p} 
                 isCurrent={state.currentTurnId === p.id} 
                 showCards={state.phase === GamePhase.GameOver}
+                isDealer={state.players[state.dealerIndex]?.id === p.id}
               />
             ))}
           </Box>
+
           {/* Table Center */}
           <Box flexGrow={1} flexDirection="column" alignItems="center" justifyContent="center">
             <Box borderStyle="single" borderColor="green" paddingX={1} height={5} alignItems="center">
@@ -176,16 +204,45 @@ export const App = ({ host, port, playerName }: { host: string; port: number; pl
           {/* Action Box */}
           <Box height={5} justifyContent="center" alignItems="center" borderStyle="classic" borderColor="yellow">
             {state.phase === GamePhase.GameOver && state.winnerIds ? (
-              <Text bold color="yellow">🎉 WINNER: {state.winnerIds.map(id => state.players.find(p => p.id === id)?.name).join(', ')}</Text>
+              <Box flexDirection="column" alignItems="center">
+                <Text bold color="yellow">🎉 WINNER: {state.winnerIds.map(id => state.players.find(p => p.id === id)?.name).join(', ')}</Text>
+                <Text color="green" bold>按 [ENTER] 或 [R] 开始下一局</Text>
+              </Box>
             ) : (
               state.currentTurnId === socket?.id && !me?.isFolded ? (
-                <Box>
-                  <Text bold color="yellow">YOUR TURN: </Text>
-                  <SelectInput items={getActionItems()} onSelect={(item) => {
-                    const action = item.value === 'raise' ? { type: 'raise', amount: state.currentMaxBet + state.bigBlind } : { type: item.value };
-                    socket?.emit('action', action);
-                  }} />
-                </Box>
+                isRaising ? (
+                  <Box flexDirection="column" alignItems="center">
+                    <Text bold color="yellow">请输入加注总额 (最小: {state.currentMaxBet + state.bigBlind}, 你的筹码: {me?.chips}):</Text>
+                    <Box borderStyle="round" borderColor="cyan" paddingX={1}>
+                      <TextInput 
+                        value={raiseAmount} 
+                        onChange={setRaiseAmount} 
+                        onSubmit={(val) => {
+                          const amount = parseInt(val);
+                          const minRaise = state.currentMaxBet + state.bigBlind;
+                          if (!isNaN(amount) && amount >= minRaise && amount <= (me?.chips || 0) + (me?.currentBet || 0)) {
+                            socket?.emit('action', { type: 'raise', amount });
+                            setIsRaising(false);
+                            setRaiseAmount('');
+                          }
+                        }}
+                      />
+                    </Box>
+                    <Text dimColor>按 ESC 取消</Text>
+                  </Box>
+                ) : (
+                  <Box>
+                    <Text bold color="yellow">YOUR TURN: </Text>
+                    <SelectInput items={getActionItems()} onSelect={(item) => {
+                      if (item.value === 'raise') {
+                        setIsRaising(true);
+                        setRaiseAmount((state.currentMaxBet + state.bigBlind).toString());
+                      } else {
+                        socket?.emit('action', { type: item.value });
+                      }
+                    }} />
+                  </Box>
+                )
               ) : <Text dimColor>Waiting for action...</Text>
             )}
           </Box>
@@ -212,6 +269,7 @@ export const App = ({ host, port, playerName }: { host: string; port: number; pl
       >
         <Box flexDirection="column">
           <Text bold color={state.currentTurnId === me?.id ? 'yellow' : 'white'}>
+            {state.players[state.dealerIndex]?.id === me?.id ? '👑 ' : ''}
             {me?.name || 'Unknown'} {me?.isFolded ? '(FOLDED)' : ''}
           </Text>
           <Text>筹码: 💰{me?.chips || 0}</Text>

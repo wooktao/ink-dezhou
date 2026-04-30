@@ -1,7 +1,7 @@
 import { Server, Socket } from 'socket.io';
 import { GameState, GamePhase, Player, Card, PlayerAction } from '../types/index.js';
 import { generateDeck, shuffleDeck, sortCards } from '../core/deck.js';
-import { evaluateHand, compareHands } from '../core/rules.js';
+import { evaluateHand, compareHands, getHandRankName } from '../core/rules.js';
 import { getAiAction } from '../core/ai.js';
 import { QwenAiAgent } from '../core/qwen.js';
 import { nanoid } from 'nanoid';
@@ -86,7 +86,13 @@ export class GameServer {
 
       socket.on('restart', () => {
         if (this.state.phase === GamePhase.GameOver) {
-          this.resetGame();
+          if (this.state.players.length >= 3) {
+            this.startNewHand();
+          } else {
+            this.addLog('Not enough players to start.');
+            this.state.phase = GamePhase.Waiting;
+            this.broadcastState();
+          }
         }
       });
 
@@ -248,20 +254,25 @@ export class GameServer {
     const playersInHand = this.state.players.filter(p => !p.isFolded);
     const evaluations = playersInHand.map(p => ({
       playerId: p.id,
+      name: p.name,
       eval: evaluateHand([...p.cards, ...this.state.communityCards])
     }));
 
     evaluations.sort((a, b) => compareHands(b.eval, a.eval));
     
     const winners = [evaluations[0].playerId];
+    const winnerDetails = [`${evaluations[0].name} (${evaluations[0].eval.description})`];
+
     for (let i = 1; i < evaluations.length; i++) {
       if (compareHands(evaluations[i].eval, evaluations[0].eval) === 0) {
         winners.push(evaluations[i].playerId);
+        winnerDetails.push(`${evaluations[i].name} (${evaluations[i].eval.description})`);
       } else {
         break;
       }
     }
 
+    this.addLog(`🎉 获胜者: ${winnerDetails.join(', ')}，赢得池底: 💰${this.state.pot}`);
     this.endHand(winners);
   }
 
@@ -275,13 +286,8 @@ export class GameServer {
     this.state.pot = 0;
     this.state.phase = GamePhase.GameOver;
     this.state.dealerIndex = (this.state.dealerIndex + 1) % this.state.players.length;
+    this.addLog('Game Over. Waiting for host to start next hand.');
     this.broadcastState();
-
-    // Auto restart after 5 seconds
-    setTimeout(() => {
-      if (this.state.players.length >= 3) this.startNewHand();
-      else this.state.phase = GamePhase.Waiting;
-    }, 5000);
   }
 
   private resetGame() {

@@ -37,7 +37,7 @@ export class QwenAiAgent {
       1. Your response must be ONLY a valid JSON object.
       2. If you raise, the amount must be at least ${state.currentMaxBet + state.bigBlind}.
       3. Do not include any explanation or markdown formatting in your response.
-      4. Include a "reasoning" field (max 10 words) explaining why you chose this action.
+      4. Include a "reasoning" field (in Chinese, max 20 characters) explaining your strategy.
 
       Return format:
       { "type": "fold" | "check" | "call" | "raise", "amount"?: number, "reasoning": string }
